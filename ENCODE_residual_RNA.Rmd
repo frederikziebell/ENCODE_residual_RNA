@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+options(width = 150)
 ```
 
 # preparations
@@ -48,15 +49,17 @@ metadata_filtered <- files_metadata %>%
   
 # compute files to be downloaded
 # for download, use command: 'xargs -L 1 curl -O -L < download_files.txt'
+# all files have already been downloaded in the folder 'data'
 str_subset(files,str_c(metadata_filtered$file_accession,collapse="|")) %>%
   write_lines("download_files.txt")
 ```
 
-# load DE results
+# load differential expression results
 ```{r}
 # metadata of differential expression files
 metadata_de <- metadata_filtered %>%
   filter(str_detect(output_type,"expression"))
+head(metadata_de)
 
 # load differential testing results files
 results_de <- list.files("data",pattern=".tsv$") %>%
@@ -68,9 +71,12 @@ results_de <- list.files("data",pattern=".tsv$") %>%
 results_de_type1 <- which(map_int(results_de,ncol) %in% c(9,10)) %>%
   results_de[.] %>%
   reduce(bind_rows)
+head(results_de_type1)
+
 results_de_type2 <- which(map_int(results_de,ncol)==15) %>%
   results_de[.] %>%
   reduce(bind_rows)
+head(results_de_type2)
 
 # get residual RNA levels for CRISPR-targeted genes
 residual_rna_levels <- bind_rows(
@@ -157,4 +163,4 @@ residual_rna_levels %>%
   theme(axis.text.x = element_text(angle=90, hjust=1, vjust=.5))
 ```
 
-This seems more reasonable.
+Almost all cell lines show reduced RNA-levels. This seems more reasonable.  
