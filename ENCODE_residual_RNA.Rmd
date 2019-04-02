@@ -1,0 +1,160 @@
+---
+title: "Analysis of fold changes of CRISPR-targeted genes from the ENCODE data set"
+author: "Frederik Ziebell"
+date: "29 3 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+# preparations
+```{r}
+suppressPackageStartupMessages({
+  library("AnnotationHub")
+  library("ensembldb")
+  library("glue")
+  library("cowplot")
+  library("tidyverse")
+})
+theme_set(theme_cowplot())
+
+# Annotate ENSEMBL genes with gene symbols
+ah <- AnnotationHub()
+edb <- query(ah,c("EnsDb","sapiens",90))[[1]]
+gene_symbols <- genes(edb, return.type="data.frame") %>%
+  remove_rownames() %>%
+  select(gene_id, hgnc_symbol=gene_name)
+```
+
+# download data
+```{r}
+# all files related to CRISPR screens
+files <- read_lines("files.txt")
+
+# metadata for all files that can be downloaded
+files_metadata <- read_tsv("metadata.tsv", guess_max=0) %>%
+  `colnames<-`(str_to_lower(str_replace_all(colnames(.)," ","_")))
+
+# filter for expression and differential testing results of gene deletions
+metadata_filtered <- files_metadata %>%
+  filter(file_format=="tsv") %>%
+  filter(output_type=="differential expression quantifications") %>%
+  filter(biosample_genetic_modifications_categories=="deletion") %>%
+  mutate(targets=str_replace(str_replace(str_replace(biosample_genetic_modifications_targets,"/targets/|",""),"-human/",""),"Non-specific%20target%20control","control")) %>%
+  select(file_accession, output_type, experiment_accession,assay,biosample_term_name,targets) %>%
+  arrange(targets,output_type)
+  
+# compute files to be downloaded
+# for download, use command: 'xargs -L 1 curl -O -L < download_files.txt'
+str_subset(files,str_c(metadata_filtered$file_accession,collapse="|")) %>%
+  write_lines("download_files.txt")
+```
+
+# load DE results
+```{r}
+# metadata of differential expression files
+metadata_de <- metadata_filtered %>%
+  filter(str_detect(output_type,"expression"))
+
+# load differential testing results files
+results_de <- list.files("data",pattern=".tsv$") %>%
+  str_subset(str_c(metadata_de$file_accession,collapse="|")) %>%
+  map(function(f) {read.delim(glue("data/{f}")) %>%
+      mutate(filename=f)})
+
+# extract testing results from both types of results files
+results_de_type1 <- which(map_int(results_de,ncol) %in% c(9,10)) %>%
+  results_de[.] %>%
+  reduce(bind_rows)
+results_de_type2 <- which(map_int(results_de,ncol)==15) %>%
+  results_de[.] %>%
+  reduce(bind_rows)
+
+# get residual RNA levels for CRISPR-targeted genes
+residual_rna_levels <- bind_rows(
+  # results of type 1
+  results_de_type1 %>%
+    mutate(base_file=str_replace(filename,".tsv","")) %>%
+    left_join(metadata_de, by=c("base_file"="file_accession")) %>%
+    mutate(gene_id=str_replace(id,"\\.[:number:]+","")) %>%
+    left_join(gene_symbols, by="gene_id") %>%
+    filter(hgnc_symbol==targets) %>%
+    select(target_name=hgnc_symbol,experiment_id=experiment_accession, parent_line=biosample_term_name, fold_change=foldChange),
+  # results of type 2
+  results_de_type2 %>%
+    mutate(base_file=str_replace(filename,".tsv","")) %>%
+    left_join(metadata_de, by=c("base_file"="file_accession")) %>%
+    filter(gene==targets) %>%
+    mutate(fold_change=2^log2.fold_change.) %>%
+    select(target_name=gene,experiment_id=experiment_accession, parent_line=biosample_term_name, fold_change)
+) 
+```
+
+# inspect results
+```{r}
+residual_rna_levels %>%
+  ggplot(aes(target_name, fold_change)) +
+  geom_point(alpha=.6) +
+  geom_abline(slope=0, intercept=1, linetype="33") +
+  labs(x="targeted gene", y="fold-change vs control") +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=.5))
+```
+
+This looks odd. Almost all CRISPR-targeted genes show *increased* RNA levels. Let's re-compute fold changes from the expression levels and compare with reported fold-changes.
+
+```{r}
+results_de_type2 <- results_de_type2 %>%
+  mutate(base_file=str_replace(filename,".tsv","")) %>%
+  left_join(metadata_de, by=c("base_file"="file_accession")) %>%
+  filter(gene==targets) %>%
+  select(gene, sample_1, sample_2, value_1, value_2, log2fc_reported=log2.fold_change.) %>%
+  mutate(log2fc_recomputed=log2(value_1/value_2))
+
+head(results_de_type2)
+
+results_de_type2 %>%
+  ggplot(aes(log2fc_recomputed,log2fc_reported)) +
+  geom_abline(intercept=0, slope=-1, color="red") +
+  geom_point(alpha=.6) +
+  xlim(-3,3) +
+  ylim(-3,3) +
+  coord_fixed() +
+  geom_hline(yintercept=0, linetype="33")
+```
+
+Since "sample_2" is annotated as control, it tells us that value_2 has to be in the denominator. However, the reported log2-fold-change is exactly the opposite and almost all reported log2-fold-changes are positive, indicating that the wrong fold change has been computed.
+
+For the other results type, we see a similar pattern, suggesting that fold changes are incorrect as well.
+```{r}
+results_de_type1 <- results_de_type1 %>%
+  mutate(base_file=str_replace(filename,".tsv","")) %>%
+  left_join(metadata_de, by=c("base_file"="file_accession")) %>%
+  mutate(gene_id=str_replace(id,"\\.[:number:]+","")) %>%
+  left_join(gene_symbols, by="gene_id") %>%
+  filter(hgnc_symbol==targets) %>%
+  select(gene_id=id, mean_a=baseMeanA, mean_b=baseMeanB, log2fc_reported=log2FoldChange) %>%
+  mutate(log2fc_recomputed=log2(mean_a/mean_b)) 
+
+results_de_type1 %>%
+  ggplot(aes(log2fc_recomputed,log2fc_reported)) +
+  geom_abline(intercept=0, slope=-1, color="red") +
+  geom_point(alpha=.6) +
+  xlim(-3,3) +
+  ylim(-3,3) +
+  coord_fixed() +
+  geom_hline(yintercept=0, linetype="33")
+```
+
+# corrected fold-changes
+```{r}
+residual_rna_levels %>%
+  ggplot(aes(target_name, 1/fold_change)) +
+  geom_point(alpha=.6) +
+  geom_abline(slope=0, intercept=1, linetype="33") +
+  labs(x="targeted gene", y="fold-change vs control") +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=.5))
+```
+
+This seems more reasonable.
