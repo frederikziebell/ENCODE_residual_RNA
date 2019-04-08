@@ -30,6 +30,7 @@ gene_symbols <- genes(edb, return.type="data.frame") %>%
 ```
 
 # download data
+The code chunk below reads a files.txt file that has been downloaded from the ENCODE project's homepage on CRISPR-induced knockouts and filters the contained metadata.tsv file for all files regarding differential expression results. 
 ```{r}
 # all files related to CRISPR screens
 files <- read_lines("files.txt")
@@ -98,13 +99,13 @@ residual_rna_levels <- bind_rows(
 ) 
 ```
 
-# inspect results
+# inspect differential expression of targeted genes
 ```{r}
 residual_rna_levels %>%
   ggplot(aes(target_name, fold_change)) +
   geom_point(alpha=.6) +
   geom_abline(slope=0, intercept=1, linetype="33") +
-  labs(x="targeted gene", y="fold-change vs control") +
+  labs(x="KO cell line", y="fold-change of targeted gene vs control") +
   theme(axis.text.x = element_text(angle=90, hjust=1, vjust=.5))
 ```
 
@@ -156,11 +157,13 @@ results_de_type1 %>%
 # corrected fold-changes
 ```{r}
 residual_rna_levels %>%
-  ggplot(aes(target_name, 1/fold_change)) +
-  geom_point(alpha=.6) +
-  geom_abline(slope=0, intercept=1, linetype="33") +
+  ggplot(aes(target_name, 1/fold_change,color=parent_line)) +
+  geom_point() +
   labs(x="targeted gene", y="fold-change vs control") +
+  guides(color=guide_legend(title="parent cell line")) +
+  theme(legend.position="bottom") +
   theme(axis.text.x = element_text(angle=90, hjust=1, vjust=.5))
+#ggsave("residual_levels.png", width=6, height=5, dpi=400)
 ```
 
-Almost all cell lines show reduced RNA-levels. This seems more reasonable.  
+The corrected data seems more reasonable. Almost all cell lines show reduced RNA-levels of the targeted gene.
